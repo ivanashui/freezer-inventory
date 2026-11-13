@@ -3,22 +3,25 @@ import {emptySnapshot,sameSample,withdrawnRecords} from './operations.js';
 export const positions=Array.from({length:100},(_,i)=>String.fromCharCode(65+Math.floor(i/10))+(i%10+1));
 const copy=v=>structuredClone(v);
 const text=(v,max=1200)=>String(v??'').trim().slice(0,max);
-export function makeBox({id='Box 1',temperature=-80,contents='',location='',sheet=crypto.randomUUID()}={}){
+export function makeBox({id='Box 1',temperature=-80,contents='',location='',sheet=crypto.randomUUID(),rows=10,columns=10,numbering='alphanumeric',importNotes=''}={}){
   if(![-80,-20].includes(Number(temperature)))throw new Error('Choose −80°C or −20°C.');
-  return {sheet,id:text(id,100)||'Box',temperature:Number(temperature),contents:text(contents,300),location:text(location,300),filled:0,slots:positions.map((position,i)=>({position,cell:String.fromCharCode(66+i%10)+(13+Math.floor(i/10)),detailRow:30+i,occupied:false,...emptySnapshot()}))};
+  rows=Number(rows);columns=Number(columns);if(!Number.isInteger(rows)||!Number.isInteger(columns)||rows<1||columns<1||rows>16||columns>16)throw new Error('Box dimensions must be whole numbers from 1 to 16.');
+  if(!['alphanumeric','numeric'].includes(numbering))throw new Error('Choose letters/numbers or numbered positions.');
+  const slots=Array.from({length:rows*columns},(_,i)=>({position:numbering==='numeric'?String(i+1):String.fromCharCode(65+Math.floor(i/columns))+(i%columns+1),cell:String.fromCharCode(66+i%columns)+(13+Math.floor(i/columns)),detailRow:30+i,occupied:false,...emptySnapshot()}));
+  return {sheet,id:text(id,100)||'Box',temperature:Number(temperature),contents:text(contents,300),location:text(location,300),rows,columns,numbering,importNotes:text(importNotes,30000),filled:0,slots};
 }
-export function emptyState(){return {version:1,revision:0,boxes:[],events:[]}}
+export function emptyState(){return {version:2,revision:0,boxes:[],events:[]}}
 export function hydrate(data,revision=0){
   if(!data)return emptyState();
-  if(data.version!==1||!Array.isArray(data.boxes)||!Array.isArray(data.events)||data.boxes.length>100)throw new Error('This is not a supported inventory backup.');
-  const state={version:1,revision,boxes:[],events:copy(data.events)};
+  if(![1,2].includes(data.version)||!Array.isArray(data.boxes)||!Array.isArray(data.events)||data.boxes.length>100)throw new Error('This is not a supported inventory backup.');
+  const state={version:2,revision,boxes:[],events:copy(data.events)};
   const ids=new Set();
   for(const raw of data.boxes){
     if(!raw.sheet||ids.has(raw.sheet)||!Array.isArray(raw.slots))throw new Error('Invalid or duplicate box in the backup.');ids.add(raw.sheet);
     const box=makeBox(raw),used=new Set();
     for(const sample of raw.slots){
-      const slot=box.slots.find(s=>s.position===sample.position);
-      if(!slot||used.has(sample.position))throw new Error('Invalid or duplicate position in the backup.');used.add(sample.position);
+      const slot=box.slots.find(s=>s.position===String(sample.position));
+      if(!slot||used.has(String(sample.position)))throw new Error('Invalid or duplicate position in the backup.');used.add(String(sample.position));
       slot.label=text(sample.label,5000);
       for(const k of Object.keys(slot.detail))slot.detail[k]=sample.detail?.[k]??'';
       slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!==''&&v!==null);
@@ -27,10 +30,20 @@ export function hydrate(data,revision=0){
   }
   return state;
 }
-export function serialize(state){return {version:1,boxes:state.boxes.map(b=>({sheet:b.sheet,id:b.id,temperature:b.temperature,contents:b.contents,location:b.location,slots:b.slots.filter(s=>s.occupied).map(s=>({position:s.position,label:s.label,detail:copy(s.detail)}))})),events:copy(state.events)}}
+export function serialize(state){return {version:2,boxes:state.boxes.map(b=>({sheet:b.sheet,id:b.id,temperature:b.temperature,contents:b.contents,location:b.location,rows:b.rows,columns:b.columns,numbering:b.numbering,importNotes:b.importNotes||'',slots:b.slots.filter(s=>s.occupied).map(s=>({position:s.position,label:s.label,detail:copy(s.detail)}))})),events:copy(state.events)}}
 export function act(state,payload){
   if(payload.revision!==state.revision)throw new Error('Your inventory changed. Refresh and review this action.');
   if(state.events.some(e=>e.id===payload.requestId))return copy(state);
+  if(payload.action==='batch'){
+    if(!Array.isArray(payload.actions)||!payload.actions.length||payload.actions.length>50)throw new Error('Prepare between 1 and 50 entries.');
+    let result=copy(state);const batchId=payload.requestId||crypto.randomUUID();
+    for(const [i,action] of payload.actions.entries()){
+      if(!['add','takeout'].includes(action.action))throw new Error('Daily notes support freezing and taking out vials.');
+      result=act(result,{...action,revision:state.revision,requestId:batchId+':'+i});
+      result.events.at(-1).batchId=batchId;
+    }
+    return result;
+  }
   const next=copy(state);let event;
   if(payload.action==='box'){
     let box=payload.sheet?next.boxes.find(b=>b.sheet===payload.sheet):null;

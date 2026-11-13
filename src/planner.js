@@ -17,9 +17,10 @@ export function plan(state,payload,events=[]){
   const draft=planAdd(state,payload);
   draft.changes=draft.slots.map((slot,i)=>{
     const item=draft.items[i];
-    return {sheet:draft.sheet,position:slot.position,cell:slot.cell,detailRow:slot.detailRow,before:snapshot(slot),after:{label:item.label,detail:{type:item.type,lot:item.lot||'',passage:item.passage??'',concentration:'',concentrationUnit:'',volume:item.volume??'',volumeUnit:item.volumeUnit||'',frozenOn:item.frozenOn,expiresOn:'',thaws:'',status:'Available',notes:[item.source?'Source: '+item.source:'',item.cells?'Cells per vial: '+item.cells:'',item.notes].filter(Boolean).join('\n')}}};
+    return {sheet:draft.sheet,position:slot.position,cell:slot.cell,detailRow:slot.detailRow,before:snapshot(slot),after:{label:item.label,detail:{type:item.type,lot:item.lot||'',passage:item.passage??'',concentration:item.concentration??'',concentrationUnit:item.concentrationUnit||'',volume:item.volume??'',volumeUnit:item.volumeUnit||'',frozenOn:item.frozenOn,expiresOn:item.expiresOn||'',thaws:item.thaws??'',status:item.status||'Available',notes:[item.source?'Source: '+item.source:'',item.cells?'Cells per vial: '+item.cells:'',item.notes].filter(Boolean).join('\n')}}};
   });
-  draft.names=draft.items.map(i=>i.name);
+  draft.names=[...new Set(draft.items.map(i=>i.name))];
+  draft.note=text(payload.note,2000);
   return draft;
 }
 function planAdd(state,payload){
@@ -37,7 +38,7 @@ function planAdd(state,payload){
   if(!entries.length)throw new UserError('Enter at least one sample.');
   const type=text(payload.type)||'Other';
   if(!['Cell line','Reagent','Other'].includes(type))throw new UserError('Choose a sample type.');
-  const shared={source:text(payload.source),notes:text(payload.notes,1200),lot:text(payload.lot),passage:numeric(payload.passage,'Passage',true),volume:numeric(payload.volume,'Volume'),volumeUnit:text(payload.volumeUnit,20),type,frozenOn};
+  const shared={source:text(payload.source),notes:text(payload.notes,1200),lot:text(payload.lot),passage:numeric(payload.passage,'Passage',true),volume:numeric(payload.volume,'Volume'),volumeUnit:text(payload.volumeUnit,20),type,frozenOn,concentration:numeric(payload.concentration,'Concentration'),concentrationUnit:text(payload.concentrationUnit,40),expiresOn:date(payload.expiresOn),thaws:numeric(payload.thaws,'Thaw count',true),status:text(payload.status)||'Available'};
   if(shared.volume!==null&&!['µL','mL','L'].includes(shared.volumeUnit))throw new UserError('Choose a volume unit (µL, mL or L).');
   const items=[];
   for(const entry of entries){
@@ -50,16 +51,16 @@ function planAdd(state,payload){
       items.push({...shared,name,cells,label});
     }
   }
-  if(items.length>100)throw new UserError('A 10×10 box holds at most 100 vials. Split this batch across boxes.');
+  if(items.length>box.slots.length)throw new UserError(`This box holds ${box.slots.length} vials. Split this batch across boxes.`);
   let start;
   if(payload.start&&payload.start!=='auto'){
     start=box.slots.findIndex(s=>s.position===String(payload.start).toUpperCase());
-    if(start<0)throw new UserError('Start position must be A1 through J10.');
+    if(start<0)throw new UserError('Choose a position shown in this box.');
   }else{
-    start=box.slots.findIndex((_,i)=>i+items.length<=100&&box.slots.slice(i,i+items.length).every(s=>!s.occupied));
+    start=box.slots.findIndex((_,i)=>i+items.length<=box.slots.length&&box.slots.slice(i,i+items.length).every(s=>!s.occupied));
     if(start<0)throw new UserError(`No run of ${items.length} empty positions is available. Choose fewer vials or a different box.`);
   }
-  if(start+items.length>100)throw new UserError('This batch would run past J10. Choose an earlier position.');
+  if(start+items.length>box.slots.length)throw new UserError('This batch would run past the end of the box. Choose an earlier position.');
   const slots=box.slots.slice(start,start+items.length),taken=slots.find(s=>s.occupied);
   if(taken)throw new UserError(`${taken.position} already contains a sample or sample details. Choose an empty starting position.`);
   return {action:'add',sheet:box.sheet,revision:state.revision,positions:slots.map(s=>s.position),slots,items};

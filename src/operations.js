@@ -30,12 +30,12 @@ export function editSnapshot(slot,updates){
 }
 export function planOperation(state,payload,events=[]){
   const action=payload.action==='remove'?'takeout':payload.action;
-  if(!['edit','takeout','move','return','use'].includes(action))fail('Choose a supported inventory action.');
+  if(!['edit','takeout','move','return','use','copy'].includes(action))fail('Choose a supported inventory action.');
   if(payload.revision!==state.revision)fail('The workbook changed. Refresh the sample and review your change again.',409);
   const changes=[];
   function locate(sheet,position,occupied){
     const box=state.boxes.find(b=>b.sheet===sheet);if(!box)fail('Choose a freezer box.');
-    const slot=box.slots.find(s=>s.position===position);if(!slot)fail('Choose a position from A1 through J10.');
+    const slot=box.slots.find(s=>s.position===position);if(!slot)fail('Choose a position shown in this box.');
     if(slot.pendingId)fail('This position already has a pending change. Wait for it to sync or cancel that change.');
     if(occupied&&!slot.occupied)fail('This position is now empty.');
     if(!occupied&&slot.occupied)fail(`${box.id}, ${slot.position} is occupied. Choose an empty position.`);
@@ -69,8 +69,20 @@ export function planOperation(state,payload,events=[]){
     if(action==='return'&&payload.incrementThaws===true)returned.detail.thaws=Number(returned.detail.thaws||0)+1;
     change(box,slot,returned);
   }
+  if(action==='copy'){
+    const box=state.boxes.find(b=>b.sheet===payload.targetSheet);if(!box)fail('Choose a destination box.');
+    const quantity=Number(payload.quantity);if(!Number.isInteger(quantity)||quantity<1||quantity>100)fail('Choose 1 to 100 copies.');
+    const start=payload.targetPosition==='auto'?0:box.slots.findIndex(s=>s.position===payload.targetPosition);
+    if(start<0)fail('Choose a starting position.');
+    if(payload.targetPosition!=='auto'&&box.slots[start].occupied)fail('The starting position is occupied.');
+    const slots=box.slots.slice(start).filter(s=>!s.occupied&&!s.pendingId).slice(0,quantity);
+    if(slots.length<quantity)fail(`Only ${slots.length} empty positions are available from this starting point.`);
+    const cleanSource=structuredClone(source);cleanSource.label=cleanSource.label.split('\n').filter(l=>!/^\d+\/\d+$/.test(l)).join('\n');
+    const copied=editSnapshot(cleanSource,payload.updates||{});
+    for(const [i,slot] of slots.entries()){const after=structuredClone(copied);if(quantity>1)after.label+='\n'+(i+1)+'/'+quantity;change(box,slot,after)}
+  }
   const disposition=payload.disposition||'out';
   if(action==='takeout'&&!['out','used_up','discarded','transferred'].includes(disposition))fail('Choose what happened to the vial.');
   if(changes.every(c=>sameSample(c.before,c.after)))fail('No sample details changed.');
-  return {action,sheet:action==='return'?record.sheet:payload.sheet,positions:action==='return'?[record.position]:[payload.position],changes,source,sample:action==='takeout'?source:undefined,names:[sampleInfo(source).name],note:clean(payload.note),operationDate:date(payload.operationDate),disposition:action==='takeout'?disposition:undefined,returnOf:action==='return'?record.id:undefined,target:changes.length>1||action==='return'?{sheet:changes.at(-1).sheet,position:changes.at(-1).position}:undefined,amount:action==='use'?Number(payload.amount):undefined};
+  return {action,sheet:action==='return'?record.sheet:payload.sheet,positions:action==='return'?[record.position]:[payload.position],changes,source,sample:action==='takeout'?source:undefined,names:[sampleInfo(source).name],note:clean(payload.note),operationDate:date(payload.operationDate),disposition:action==='takeout'?disposition:undefined,returnOf:action==='return'?record.id:undefined,target:changes.length>1||['return','copy'].includes(action)?{sheet:changes.at(-1).sheet,position:changes.at(-1).position}:undefined,amount:action==='use'?Number(payload.amount):undefined};
 }
