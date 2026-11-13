@@ -7,14 +7,14 @@ export function snapshot(slot){return {label:slot.label||'',detail:structuredClo
 export function sameSample(a,b){const x=snapshot(a),y=snapshot(b);return x.label===y.label&&[...new Set([...Object.keys(x.detail),...Object.keys(y.detail)])].every(k=>(x.detail[k]??'')===(y.detail[k]??''))}
 export function emptySnapshot(){return {label:'',detail:Object.fromEntries(['type','lot','passage','concentration','concentrationUnit','volume','volumeUnit','frozenOn','expiresOn','thaws','status','notes'].map(k=>[k,'']))}}
 export function withdrawnRecords(events){
-  const undone=new Set(events.filter(e=>e.action==='undo'&&e.undoOf).map(e=>e.undoOf));
+  const undone=new Set(events.filter(e=>e.action==='undo').flatMap(e=>e.undoOfs||[e.undoOf]).filter(Boolean));
   const active=events.filter(e=>!undone.has(e.id));
   const returned=new Set(active.filter(e=>e.action==='return').map(e=>e.returnOf));
   return active.filter(e=>e.action==='takeout'&&e.sample&&!returned.has(e.id)).map(e=>({id:e.id,sheet:e.sheet,position:e.positions[0],sample:e.sample,name:sampleInfo(e.sample).name,time:e.time,date:e.operationDate||e.time.slice(0,10),disposition:e.disposition,note:e.note,canReturn:e.disposition==='out'}));
 }
 export function editSnapshot(slot,updates){
   const old={...sampleInfo(slot),status:slot.detail?.status||''},info={...old,...updates};
-  for(const k of ['name','source','cells','lot','notes','type','status','volumeUnit','concentrationUnit'])info[k]=clean(info[k],k==='name'?600:k==='notes'?1200:300);
+  for(const k of ['name','source','cells','lot','notes','type','status','volumeUnit','concentrationUnit'])if(String(info[k]??'')!==String(old[k]??''))info[k]=clean(info[k],k==='name'?5000:k==='notes'?20000:300);
   if(!info.name)fail('Enter a sample name or ID.');
   if(/\d\s*(?:u|µ|μ|m)?l\b/i.test(info.cells))fail('Enter liquid amounts under Volume per vial.');
   for(const k of ['frozenOn','expiresOn'])info[k]=date(info[k]);
@@ -25,7 +25,7 @@ export function editSnapshot(slot,updates){
   const label=labelChanged?[info.name,info.source?`from ${info.source}`:'',[info.frozenOn.replaceAll('-','.'),info.cells?info.cells+' cells':''].filter(Boolean).join(' '),present(info.volume)?`${info.volume} ${info.volumeUnit}`:'',slot.label?.split('\n').find(l=>/^\d+\/\d+$/.test(l))||''].filter(Boolean).join('\n'):slot.label;
   const detail={...slot.detail};
   for(const k of ['type','lot','passage','concentration','concentrationUnit','volume','volumeUnit','frozenOn','expiresOn','thaws','status'])detail[k]=info[k];
-  detail.notes=[info.source?'Source: '+info.source:'',info.cells?'Cells per vial: '+info.cells:'',info.notes].filter(Boolean).join('\n');
+  if(['source','cells','notes'].some(k=>String(info[k]??'')!==String(old[k]??'')))detail.notes=[info.source?'Source: '+info.source:'',info.cells?'Cells per vial: '+info.cells:'',info.notes].filter(Boolean).join('\n');
   return {label,detail};
 }
 export function planOperation(state,payload,events=[]){

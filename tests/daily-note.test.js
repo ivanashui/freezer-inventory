@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {parseNotes} from '../src/note-parser.js';
+import {parseNotes,parseLabelText} from '../src/note-parser.js';
 import {parsePositions} from '../src/positions.js';
 import {act,emptyState,makeBox,serialize} from '../src/model.js';
 const today='2026-01-15';
@@ -47,4 +47,30 @@ test('unclear text and conflicting metadata need review; no date or destination 
  const [extra]=prepare(s,'Froze 2 vials of Sample 001, some unclear detail');assert.deepEqual(extra.unrecognized,['some unclear detail']);assert.match(extra.notes,/some unclear detail/);assert.ok(extra.issues.notes);
  const [located]=prepare(fixture(),'Froze 1 vial of Sample 002, box7, D1, check this extra wording');assert.equal(located.positions,'D1');assert.deepEqual(located.unrecognized,['check this extra wording']);
  const [conflict]=prepare(s,'Froze 2 vials of Sample 001 100 uL each 200 uL each');assert.equal(conflict.volume,'');assert.ok(conflict.issues.volume);
+});
+test('fractional and scientific amounts retain the complete value',()=>{
+ const s=fixture();
+ for(const [note,volume,cells] of [
+  ['Froze 2 vials of Sample 001, .5 mL each, .5 million cells',.5,'500000'],
+  ['Froze 2 vials of Sample 001, 2e-1 mL each, 5x10^6 cells',.2,'5000000'],
+  ['Froze 2 vials of Sample 001, 0 uL each, 0 cells',0,'0'],
+ ]){
+  const [r]=prepare(s,note);assert.deepEqual(r.errors,[],note);assert.equal(r.name,'Sample 001');assert.equal(r.volume,volume);assert.equal(r.cells,cells);const saved=save(s,[r]);assert.equal(saved.boxes[0].slots[0].detail.volume,volume);
+ }
+ assert.equal(parseLabelText('Sample 001\n.5 mL').volume,.5);
+});
+test('negative or fractional vial counts and negative amounts cannot turn into positive suffixes',()=>{
+ const s=fixture();
+ for(const count of ['-2','2.5','.5','-20']){const [r]=prepare(s,`Froze ${count} vials of Sample 001`);assert.equal(r.quantity,Number(count));assert.equal(r.name,'Sample 001');assert.ok(r.issues.quantity);assert.equal(r.sheet,s.boxes[0].sheet)}
+ for(const amount of ['-2','-20','−.5']){const [r]=prepare(s,`Froze 2 vials of Sample 001, ${amount} uL`);assert.equal(r.volume,'');assert.ok(r.issues.volume);assert.equal(r.sheet,s.boxes[0].sheet)}
+ for(const amount of ['-5e6','-20.5','-20 million','-20×10^6']){const [r]=prepare(s,`Froze 2 vials of Sample 001, ${amount} cells`);assert.equal(r.cells,'');assert.ok(r.issues.cells);assert.equal(r.sheet,s.boxes[0].sheet)}
+ const [named]=prepare(s,'Froze 1 vial of Sample-20');assert.equal(named.name,'Sample-20');assert.equal(named.sheet,s.boxes[0].sheet);
+});
+test('total batch amounts require per-vial clarification',()=>{
+ const [r]=prepare(fixture(),'Froze 2 vials of Sample 001, 100 uL total, 2 million cells in total');assert.equal(r.volume,'');assert.equal(r.cells,'');assert.match(r.issues.volume,/per vial/);assert.match(r.issues.cells,/per vial/);
+});
+test('a multi-vial take-out by name cannot silently remove just one match',()=>{
+ let s=fixture();s=save(s,prepare(s,'Froze 1 vial of Sample 001, box7, A1'));
+ const [r]=prepare(s,'Took out 2 vials of Sample 001');assert.equal(r.position,'');assert.match(r.issues.quantity,/exact positions/);
+ const [single]=prepare(s,'Took out 1 vial of Sample 001');assert.equal(single.position,'A1');assert.deepEqual(single.errors,[]);
 });

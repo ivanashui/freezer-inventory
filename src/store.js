@@ -19,13 +19,12 @@ export async function createStore({factory=globalThis.indexedDB,databaseName='fr
       const row=await read('workbooks',selectedId);if(!row)throw new Error('Choose a workbook saved in this browser.');return unpack(row)},
     async save(state,payload){
       if(state.workbookId!==selectedId)throw new Error('The selected workbook changed. Refresh before saving.');
-      const next=act(state,payload),data=serialize(next);
       return new Promise((resolve,reject)=>{
         const tx=db.transaction('workbooks','readwrite'),store=tx.objectStore('workbooks'),get=store.get(selectedId);let saved,error;
         get.onsuccess=()=>{const current=get.result;if(!current){error=new Error('This workbook is unavailable. Refresh before saving.');tx.abort();return}
-          if(current.lastRequestId===payload.requestId){saved=current;return}
+          if(payload.requestId&&(current.lastRequestId===payload.requestId||current.data.events.some(e=>e.id===payload.requestId||e.batchId===payload.requestId))){saved=current;return}
           if(current.revision!==state.revision){error=new Error('This workbook changed in another tab. Refresh and review your entry before saving.');tx.abort();return}
-          saved={...current,data,revision:current.revision+1,lastRequestId:payload.requestId,updatedAt:new Date().toISOString()};store.put(saved);
+          try{const data=serialize(act(state,payload));saved={...current,data,revision:current.revision+1,lastRequestId:payload.requestId,updatedAt:new Date().toISOString()};store.put(saved)}catch(cause){error=cause;tx.abort()}
         };
         tx.oncomplete=()=>resolve(unpack(saved));tx.onabort=()=>reject(error||tx.error||new Error('Browser storage could not save this change. Download a backup before closing.'));tx.onerror=()=>reject(tx.error);
       });

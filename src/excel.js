@@ -3,32 +3,55 @@ import {makeBox,serialize,hydrate} from './model.js';
 import {sampleInfo,present} from './sample-info.js';
 const headers=['Position','Sample label','Type','Lot / clone','Passage','Concentration','Conc. unit','Volume','Volume unit','Date frozen','Expiry','Thaws','Status','Notes'];
 const detailKeys=['type','lot','passage','concentration','concentrationUnit','volume','volumeUnit','frozenOn','expiresOn','thaws','status','notes'];
-function value(cell){const v=cell.value;if(v==null)return '';if(v instanceof Date)return v.toISOString().slice(0,10);if(typeof v==='object'){if(v.richText)return v.richText.map(t=>t.text).join('');if('result' in v)return v.result??'';if('text' in v)return v.text;return ''}return v}
-function date(v){if(v instanceof Date)return v.toISOString().slice(0,10);if(typeof v==='number')return new Date((v-25569)*86400000).toISOString().slice(0,10);return String(v||'')}
+function value(cell){const v=cell.value;if(v==null)return '';if(v instanceof Date)return v.toISOString().slice(0,10);if(typeof v==='object'){if(v.richText)return v.richText.map(t=>t.text).join('');if(('formula' in v||'sharedFormula' in v)&&!('result' in v))throw new Error(`${cell.worksheet.name}, ${cell.address}: this formula has no saved result. Recalculate and save it in Excel, or replace it with a value.`);if('result' in v)return v.result??'';if('text' in v)return v.text;return ''}return v}
+function date(v,date1904=false){if(v instanceof Date)return v.toISOString().slice(0,10);if(typeof v==='number')return new Date((v-(date1904?24107:25569))*86400000).toISOString().slice(0,10);return String(v||'')}
+function logValues(box,slot){const i=sampleInfo(slot);return [box.temperature,box.id,slot.position,i.name,i.frozenOn,i.volume,i.volumeUnit,i.cells,i.source,i.type,i.passage,i.lot,i.concentration,i.concentrationUnit,i.expiresOn,i.thaws,i.status,i.notes]}
+function checkSampleLog(wb,state,boxes){
+  const log=wb.getWorksheet('Sample log');if(!log)return;
+  const normalize=values=>JSON.stringify(values.map((v,i)=>String(i===4||i===14?date(v,wb.properties.date1904):v??'')));
+  const rowsFor=items=>JSON.stringify(items.flatMap(box=>box.slots.filter(s=>s.occupied).map(slot=>normalize(logValues(box,slot)))).sort()),actual=[];
+  for(let r=2;r<=log.rowCount;r++){
+    const row=log.getRow(r),values=Array.from({length:18},(_,i)=>value(row.getCell(i+1)));
+    if(values.some(v=>v!==''))actual.push(normalize(values));
+    for(let c=19;c<=row.cellCount;c++)if(value(row.getCell(c))!=='')throw new Error('The Sample log contains added columns that the box sheets do not contain. Copy this information into the app or the box-sheet Notes column, then export again. Nothing was imported.');
+  }
+  const rows=JSON.stringify(actual.sort());
+  if(rows!==rowsFor(state.boxes)&&rows!==rowsFor(boxes))throw new Error('The Sample log has edits that are not in the box sheets. Apply the same edits to the box sheets and save the file, or make the changes in the app and export again. Nothing was imported.');
+}
 export async function readExcel(buffer){
   if(buffer.byteLength>12000000)throw new Error('Choose an Excel file smaller than 12 MB.');
   const wb=new ExcelJS.Workbook();await wb.xlsx.load(buffer);const boxes=[];
-  const metadata=wb.getWorksheet('_Inventory data');let saved=null;
+  const metadata=wb.getWorksheet('_Inventory data');let saved=null,baseline=null;
   if(metadata&&value(metadata.getCell('A1'))==='Freezer Inventory v1'){
     const count=Number(value(metadata.getCell('A2')));if(!Number.isInteger(count)||count<1||count>600)throw new Error('Invalid workbook history.');
     const json=Array.from({length:count},(_,i)=>value(metadata.getCell(i+4,1))).join('');
-    saved=JSON.parse(json);hydrate(saved.state);
+    saved=JSON.parse(json);baseline=hydrate(saved.state);
+    if(!Array.isArray(saved.sheets)||saved.sheets.length!==baseline.boxes.length||new Set(saved.sheets.map(s=>s.id)).size!==baseline.boxes.length||new Set(saved.sheets.map(s=>s.name)).size!==baseline.boxes.length||saved.sheets.some(s=>!baseline.boxes.some(b=>b.sheet===s.id)))throw new Error('The saved box-sheet mapping is invalid. Import the workbook with a column mapping instead.');
+    for(const mapping of saved.sheets)if(!wb.getWorksheet(mapping.name))throw new Error(`The box sheet “${mapping.name}” was deleted or renamed. Restore its original name before importing so its entries and history stay together.`);
   }
   for(const sheet of wb.worksheets){
-    const temp=Number(value(sheet.getCell('D5'))),mapped=saved?.sheets?.find(s=>s.name===sheet.name),prior=saved?.state.boxes.find(b=>b.sheet===mapped?.id);
+    const temp=Number(value(sheet.getCell('D5'))),mapped=saved?.sheets?.find(s=>s.name===sheet.name),prior=baseline?.boxes.find(b=>b.sheet===mapped?.id);
     const dimensions={rows:Number(value(sheet.getCell('N4')))||prior?.rows||10,columns:Number(value(sheet.getCell('N5')))||prior?.columns||10,numbering:['numeric','alphanumeric'].includes(value(sheet.getCell('N6')))?value(sheet.getCell('N6')):prior?.numbering||'alphanumeric',importNotes:prior?.importNotes||''};
-    if(![-80,-20].includes(temp)||value(sheet.getCell('A29'))!=='Position'||String(value(sheet.getCell('A30')))!==(dimensions.numbering==='numeric'?'1':'A1'))continue;
+    if(![-80,-20].includes(temp)||value(sheet.getCell('A29'))!=='Position'){if(mapped)throw new Error(`The box sheet “${sheet.name}” has an invalid temperature or detail-table header. Restore its layout before importing.`);continue}
+    if(prior&&(dimensions.rows!==prior.rows||dimensions.columns!==prior.columns||dimensions.numbering!==prior.numbering))throw new Error(`The dimensions or numbering of “${sheet.name}” changed. Restore its layout before importing so no positions are lost.`);
     const box=makeBox({...dimensions,id:value(sheet.getCell('B5'))||sheet.name,temperature:temp,contents:value(sheet.getCell('D8')),location:[value(sheet.getCell('F5')),value(sheet.getCell('H5')),value(sheet.getCell('J5'))].filter(Boolean).join(' / ')});
     if(mapped)box.sheet=mapped.id;
+    const detailRows=new Map();
+    for(let r=30;r<30+box.slots.length;r++){const position=String(value(sheet.getCell(r,1)));if(!box.slots.some(s=>s.position===position)||detailRows.has(position))throw new Error(`“${sheet.name}”, row ${r}: the detail table has an invalid or duplicate position. Restore all positions before importing.`);detailRows.set(position,r)}
     for(const slot of box.slots){
-      slot.label=String(value(sheet.getCell(slot.cell)));if(box.numbering==='numeric'&&slot.label.startsWith(slot.position+'\n'))slot.label=slot.label.slice(slot.position.length+1);
-      detailKeys.forEach((key,j)=>slot.detail[key]=value(sheet.getCell(slot.detailRow,j+3)));
-      for(const key of ['frozenOn','expiresOn'])slot.detail[key]=date(slot.detail[key]);
+      let gridLabel=String(value(sheet.getCell(slot.cell)));if(box.numbering==='numeric'&&gridLabel.startsWith(slot.position+'\n'))gridLabel=gridLabel.slice(slot.position.length+1);
+      const row=detailRows.get(slot.position),tableLabel=String(value(sheet.getCell(row,2))),priorLabel=prior?.slots.find(s=>s.position===slot.position)?.label;
+      if(gridLabel!==tableLabel&&priorLabel!==undefined){if(gridLabel===priorLabel)gridLabel=tableLabel;else if(tableLabel!==priorLabel)throw new Error(`“${sheet.name}”, ${slot.position}: the grid and detail-table labels have conflicting edits. Make both labels match before importing.`)}
+      else if(gridLabel!==tableLabel&&gridLabel&&tableLabel)throw new Error(`“${sheet.name}”, ${slot.position}: the grid and detail-table labels disagree. Make both labels match before importing.`);
+      slot.label=gridLabel||(!prior?tableLabel:'');
+      detailKeys.forEach((key,j)=>slot.detail[key]=value(sheet.getCell(row,j+3)));
+      for(const key of ['frozenOn','expiresOn'])slot.detail[key]=date(slot.detail[key],wb.properties.date1904);
       slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!=='');
     }
     box.filled=box.slots.filter(s=>s.occupied).length;boxes.push(box);
   }
-  if(!boxes.length){const error=new Error('This workbook needs an import mapping.');error.code='NEEDS_MAPPING';throw error;}
+  if(baseline)checkSampleLog(wb,baseline,boxes);
+  if(!boxes.length&&!saved){const error=new Error('This workbook needs an import mapping.');error.code='NEEDS_MAPPING';throw error;}
   return serialize({boxes,events:saved?.state.events||[]});
 }
 const blue='233E60',light='DCEBF5',yellow='FFF6D9';
@@ -58,7 +81,7 @@ export async function writeExcel(state){
       detailKeys.forEach((key,i)=>{sheet.getCell(slot.detailRow,i+3).value=['frozenOn','expiresOn'].includes(key)?typedDate(slot.detail[key]):(slot.detail[key]===''?null:slot.detail[key])});
       sheet.getRow(slot.detailRow).alignment={wrapText:true,vertical:'top'};sheet.getRow(slot.detailRow).height=slot.occupied?Math.min(409,Math.max(48,lines*16+12)):22;
       sheet.getCell(slot.detailRow,10).numFmt='yyyy-mm-dd';sheet.getCell(slot.detailRow,11).numFmt='yyyy-mm-dd';
-      if(slot.occupied){const i=sampleInfo(slot),row=log.addRow([box.temperature,box.id,slot.position,i.name,typedDate(i.frozenOn),present(i.volume)?i.volume:null,i.volumeUnit,i.cells,i.source,i.type,i.passage,i.lot,i.concentration,i.concentrationUnit,typedDate(i.expiresOn),i.thaws,i.status,i.notes]);row.alignment={wrapText:true,vertical:'top'};row.height=Math.max(45,Math.ceil(i.name.length/45)*16+14);row.getCell(5).numFmt='yyyy-mm-dd';row.getCell(15).numFmt='yyyy-mm-dd'}
+      if(slot.occupied){const values=logValues(box,slot),row=log.addRow(values.map((v,i)=>i===4||i===14?typedDate(v):present(v)?v:null));row.alignment={wrapText:true,vertical:'top'};row.height=Math.max(45,Math.ceil(values[3].length/45)*16+14);row.getCell(5).numFmt='yyyy-mm-dd';row.getCell(15).numFmt='yyyy-mm-dd'}
     }
     sheet.autoFilter={from:'A29',to:`N${29+box.slots.length}`};
   }

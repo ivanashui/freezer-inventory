@@ -22,7 +22,7 @@ export function hydrate(data,revision=0){
     for(const sample of raw.slots){
       const slot=box.slots.find(s=>s.position===String(sample.position));
       if(!slot||used.has(String(sample.position)))throw new Error('Invalid or duplicate position in the backup.');used.add(String(sample.position));
-      slot.label=text(sample.label,5000);
+      slot.label=String(sample.label??'').trim();
       for(const k of Object.keys(slot.detail))slot.detail[k]=sample.detail?.[k]??'';
       slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!==''&&v!==null);
     }
@@ -33,7 +33,7 @@ export function hydrate(data,revision=0){
 export function serialize(state){return {version:2,boxes:state.boxes.map(b=>({sheet:b.sheet,id:b.id,temperature:b.temperature,contents:b.contents,location:b.location,rows:b.rows,columns:b.columns,numbering:b.numbering,importNotes:b.importNotes||'',slots:b.slots.filter(s=>s.occupied).map(s=>({position:s.position,label:s.label,detail:copy(s.detail)}))})),events:copy(state.events)}}
 export function act(state,payload){
   if(payload.revision!==state.revision)throw new Error('Your inventory changed. Refresh and review this action.');
-  if(state.events.some(e=>e.id===payload.requestId))return copy(state);
+  if(payload.requestId&&state.events.some(e=>e.id===payload.requestId||e.batchId===payload.requestId))return copy(state);
   if(payload.action==='batch'){
     if(!Array.isArray(payload.actions)||!payload.actions.length||payload.actions.length>50)throw new Error('Prepare between 1 and 50 entries.');
     let result=copy(state);const batchId=payload.requestId||crypto.randomUUID();
@@ -55,9 +55,9 @@ export function act(state,payload){
   }else if(payload.action==='import'){
     const imported=hydrate(payload.data);
     if(next.boxes.length+imported.boxes.length>100)throw new Error('This import would exceed 100 boxes.');
-    const sheets=new Map(imported.boxes.map(b=>[b.sheet,crypto.randomUUID()])),eventIds=new Map(imported.events.map(e=>[e.id,crypto.randomUUID()]));
+    const sheets=new Map(imported.boxes.map(b=>[b.sheet,crypto.randomUUID()])),eventIds=new Map(imported.events.flatMap(e=>[e.id,e.batchId].filter(Boolean)).map(id=>[id,crypto.randomUUID()]));
     for(const box of imported.boxes){box.sheet=sheets.get(box.sheet);next.boxes.push(box)}
-    function remap(v){if(Array.isArray(v))return v.map(remap);if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).map(([k,val])=>[k,k==='sheet'?(sheets.get(val)||val):['id','returnOf','undoOf'].includes(k)?(eventIds.get(val)||val):remap(val)]));return v}
+    function remap(v){if(Array.isArray(v))return v.map(remap);if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).map(([k,val])=>[k,k==='sheet'?(sheets.get(val)||val):['id','returnOf','undoOf','batchId'].includes(k)?(eventIds.get(val)||val):k==='undoOfs'?val.map(id=>eventIds.get(id)||id):remap(val)]));return v}
     next.events.push(...imported.events.map(remap));
     event={action:'import',sheet:'',positions:[],names:[`${imported.boxes.length} imported boxes`],importedSheets:imported.boxes.map(b=>b.sheet)};
   }else if(payload.action==='restore'){
@@ -66,8 +66,11 @@ export function act(state,payload){
   }else if(payload.action==='undo'){
     const previous=next.events.at(-1);
     if(!previous?.changes||previous.action==='undo')throw new Error('This change cannot be undone.');
-    for(const c of previous.changes){const slot=next.boxes.find(b=>b.sheet===c.sheet)?.slots.find(s=>s.position===c.position);if(!slot||!sameSample(slot,c.after))throw new Error('The vial changed after this action. Undo is unavailable.');Object.assign(slot,copy(c.before));slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!==''&&v!==null)}
-    event={action:'undo',undoOf:previous.id,sheet:previous.sheet,positions:previous.positions,names:previous.names};
+    const undone=[previous];
+    if(previous.batchId)for(let i=next.events.length-2;i>=0&&next.events[i].batchId===previous.batchId;i--)undone.push(next.events[i]);
+    // Reverse the whole save, including reuse of a position by a later line.
+    for(const entry of undone)for(const c of [...entry.changes].reverse()){const slot=next.boxes.find(b=>b.sheet===c.sheet)?.slots.find(s=>s.position===c.position);if(!slot||!sameSample(slot,c.after))throw new Error('The vial changed after this action. Undo is unavailable.');Object.assign(slot,copy(c.before));slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!==''&&v!==null)}
+    event={action:'undo',undoOf:previous.id,undoOfs:undone.map(e=>e.id),sheet:previous.sheet,positions:[...new Set(undone.flatMap(e=>e.positions||[]))],names:[...new Set(undone.flatMap(e=>e.names||[]))]};
   }else{
     const draft=plan(state,payload,state.events);
     for(const c of draft.changes){const slot=next.boxes.find(b=>b.sheet===c.sheet).slots.find(s=>s.position===c.position);Object.assign(slot,copy(c.after));slot.occupied=!!slot.label||Object.values(slot.detail).some(v=>v!==''&&v!==null)}

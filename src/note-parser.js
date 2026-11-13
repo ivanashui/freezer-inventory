@@ -1,6 +1,11 @@
 import {parsePositions} from './positions.js';
 import {sampleInfo} from './sample-info.js';
 const words={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+// Match the complete amount, including a leading decimal/sign, rather than a
+// positive integer suffix inside ".5", "-2" or scientific notation.
+const amount='[+−-]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:e[+−-]?\\d+)?';
+const amountBoundary='(?<![\\w.+−^*-])';
+const numberValue=value=>Number(value.replaceAll('−','-'));
 export const localDate=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
 export function validDate(value){const d=new Date(value+'T12:00:00Z');return /^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(+d)&&d.toISOString().slice(0,10)===value}
 export function relativeDate(value,today=localDate()){if(value==='today')return today;if(value==='yesterday'){const d=new Date(today+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-1);return d.toISOString().slice(0,10)}if(!validDate(value))throw new Error('Use a real date as YYYY-MM-DD, today, or yesterday.');return value}
@@ -29,17 +34,18 @@ export function parseNotes(text,state,{sheet=state.boxes[0]?.sheet,today=localDa
     const datePattern=/\b(?:on\s+)?(today|yesterday|\d{4}[-.]\d{1,2}[-.]\d{1,2})\b/gi;
     extract(datePattern,(_,v)=>{try{let d=v.toLowerCase();if(/^\d/.test(d)){const p=d.split(/[-.]/);d=[p[0],p[1].padStart(2,'0'),p[2].padStart(2,'0')].join('-')}set('frozenOn',relativeDate(d,today));row.operationDate=row.frozenOn}catch{row.frozenOn='';row.operationDate='';row.issues.frozenOn='Check the date below; that date is not valid.'}});
     let requestedBox='',temperature=null;
-    extract(/(?:\bat\s+)?[−-](80|20)\s*(?:°?C)?\b/gi,(_,v)=>{const n=-Number(v);if(temperature!==null&&temperature!==n)row.issues.sheet='Two freezer temperatures were mentioned. Choose the box below.';temperature=n});
+    extract(/(?<![\w.])(?:\bat\s+)?[−-](80|20)(?![\d.])(?:\s*°?C)?\b(?!\s*(?:[x×*]|(?:vials?|tubes?|aliquots?|cells|million|thousand|[uµμm]?l)\b))/gi,(_,v)=>{const n=-Number(v);if(temperature!==null&&temperature!==n)row.issues.sheet='Two freezer temperatures were mentioned. Choose the box below.';temperature=n});
     extract(/\b(?:in\s+|into\s+|to\s+|from\s+)?box\s*#?\s*(\d+)\b/gi,(_,v)=>{const id='Box '+Number(v);if(requestedBox&&normal(requestedBox)!==normal(id))row.issues.sheet='More than one box was mentioned. Use one box per line.';requestedBox=id});
     // Non-numbered box names can be written exactly as they appear in the selector.
     if(!requestedBox){for(const b of [...state.boxes].sort((a,b)=>b.id.length-a.id.length)){if(/^box\s*\d+$/i.test(b.id))continue;const safe=b.id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');const re=new RegExp('(?:^|[, ]+)(?:in\\s+|into\\s+|box:\\s*)?'+safe+'(?=,|$)','i');if(re.test(remaining)){remaining=remaining.replace(re,' ');requestedBox=b.id;break}}}
     if(requestedBox||temperature!==null){const choices=state.boxes.filter(b=>(!requestedBox||normal(b.id).replace(/box0+(?=\d)/,'box')===normal(requestedBox))&&(temperature===null||b.temperature===temperature));if(choices.length===1&&!row.issues.sheet)row.sheet=choices[0].sheet;else{row.sheet='';row.issues.sheet ||= choices.length?'That box is ambiguous across freezers. Choose the correct box below.':'Box not found. Choose an existing box below.'}}
-    const number='(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:e[+]?\\d+)?';
-    extract(new RegExp('\\b(?:with\\s+|at\\s+)?(?:cells\\s*[:=]\\s*)?('+number+')(?:\\s*(million|thousand|m))?\\s*cells(?:\\s*(?:each|(?:per|/)\\s*vial))?\\b','gi'),(_,v,scale)=>set('cells',String(Number(v)*(/^(million|m)$/i.test(scale||'')?1e6:/^thousand$/i.test(scale||'')?1e3:1))));
-    extract(/\b(?:with\s+|at\s+)?(?:volume\s*[:=]\s*)?(\d+(?:\.\d+)?)\s*(ul|µl|μl|ml|l)\b(?:\s*(?:each|(?:per|\/)\s*vial))?/gi,(_,v,u)=>{set('volume',Number(v));set('volumeUnit',/^[uµμ]/i.test(u)?'µL':/^m/i.test(u)?'mL':'L')});
+    function setAmount(key,value,total){if(!Number.isFinite(value)||value<0){row[key]='';row.issues[key]=`Enter a non-negative ${key==='cells'?'cell count':'volume'} below.`}else if(total){row[key]='';row.issues[key]=`The note gives a total ${key==='cells'?'cell count':'volume'}. Enter the amount per vial below.`}else set(key,key==='cells'?String(value):value)}
+    extract(new RegExp(amountBoundary+'(?:with\\s+|at\\s+)?(?:cells\\s*[:=]\\s*)?('+amount+')\\s*[x×*]\\s*10\\s*\\^\\s*([+−-]?\\d+)\\s*cells(?:\\s*(?:each|(?:per|/)\\s*vial))?(?:\\s+(total|in total))?\\b','gi'),(_,v,power,total)=>setAmount('cells',numberValue(v)*10**numberValue(power),total));
+    extract(new RegExp(amountBoundary+'(?:with\\s+|at\\s+)?(?:cells\\s*[:=]\\s*)?('+amount+')(?:\\s*(million|thousand|m))?\\s*cells(?:\\s*(?:each|(?:per|/)\\s*vial))?(?:\\s+(total|in total))?\\b','gi'),(_,v,scale,total)=>setAmount('cells',numberValue(v)*(/^(million|m)$/i.test(scale||'')?1e6:/^thousand$/i.test(scale||'')?1e3:1),total));
+    extract(new RegExp(amountBoundary+'(?:with\\s+|at\\s+)?(?:volume\\s*[:=]\\s*)?('+amount+')\\s*(ul|µl|μl|ml|l)\\b(?:\\s*(?:each|(?:per|/)\\s*vial))?(?:\\s+(total|in total))?','gi'),(_,v,u,total)=>{setAmount('volume',numberValue(v),total);set('volumeUnit',/^[uµμ]/i.test(u)?'µL':/^m/i.test(u)?'mL':'L')});
     extract(/\b(?:passage\s*[:=]?\s*P?|P)(\d+)\b/gi,(_,v)=>set('passage',Number(v)));
     let quantityGiven=false;
-    extract(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*(?:vials?|tubes?|aliquots?)\b/gi,(_,v)=>{quantityGiven=true;set('quantity',words[v.toLowerCase()]||(/^(a|an)$/i.test(v)?1:Number(v)))});
+    extract(new RegExp(amountBoundary+'('+amount+'|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\\s*(?:vials?|tubes?|aliquots?)\\b','gi'),(_,v)=>{quantityGiven=true;set('quantity',words[v.toLowerCase()]||(/^(a|an)$/i.test(v)?1:numberValue(v)))});
     let actionFound=false;
     extract(/\b(?:(?:I|we)\s+)?(took out|take out|removed?|used up|discarded?|froze|freeze|frozen|stored?|add(?:ed)?|log(?:ged)?|put)\b/i,(_,v)=>{actionFound=true;if(/^(took|take|remov|used|discard)/i.test(v)){row.action='takeout';row.disposition=/used up/i.test(v)?'used_up':/discard/i.test(v)?'discarded':'out'}});
     if(!actionFound)row.issues.action='Start with a freezing or take-out action, such as “froze” or “took out”.';
@@ -68,7 +74,8 @@ export function parseNotes(text,state,{sheet=state.boxes[0]?.sheet,today=localDa
       if(row.positions&&box){try{const ps=parsePositions(row.positions,box);if(quantityGiven&&row.quantity!==ps.length)row.issues.quantity=`The count (${row.quantity}) and listed positions (${ps.length}) differ. Correct the original note.`;
         for(const position of ps){const slot=box.slots.find(s=>s.position===position),child={...row,issues:{...row.issues},position,quantity:1,positions:'',expectedName:row.name};if(row.name&&slot?.occupied&&normal(sampleInfo(slot).name)!==normal(row.name))child.issues.position='This position contains a different sample. Check the vial selector below.';child.errors=Object.values(child.issues);results.push(child)}continue;
       }catch(e){row.issues.position=e.message;row.positions=''}}
-      if(!row.position&&row.name){const matches=state.boxes.filter(b=>(!requestedBox||b.sheet===row.sheet)&&(temperature===null||b.temperature===temperature)).flatMap(b=>b.slots.filter(s=>s.occupied&&normal(sampleInfo(s).name)===normal(row.name)).map(s=>({sheet:b.sheet,position:s.position})));if(matches.length===1)Object.assign(row,matches[0]);else row.needsPosition=matches.length?'Several vials match. Choose the exact box and position below.':'Choose the correct vial below.'}
+      if(quantityGiven&&row.quantity!==1&&!row.positions){row.issues.quantity ||= 'List the exact positions when taking out multiple vials, for example A1 and A2.';row.needsPosition='The requested vial count needs explicit positions.'}
+      if(!row.position&&row.name&&!row.issues.quantity){const matches=state.boxes.filter(b=>(!requestedBox||b.sheet===row.sheet)&&(temperature===null||b.temperature===temperature)).flatMap(b=>b.slots.filter(s=>s.occupied&&normal(sampleInfo(s).name)===normal(row.name)).map(s=>({sheet:b.sheet,position:s.position})));if(matches.length===1)Object.assign(row,matches[0]);else row.needsPosition=matches.length?'Several vials match. Choose the exact box and position below.':'Choose the correct vial below.'}
     }
     row.errors=Object.values(row.issues);results.push(row);
   }
@@ -81,7 +88,7 @@ export function parseLabelText(text,{sheet,today=localDate()}={}){
     if((m=line.match(/^(?:sample(?: name)?|name|id)\s*[:=]\s*(.+)$/i)))row.name=m[1];
     else if((m=line.match(/^(?:source|from)\s*[:=]\s*(.+)$/i)))row.source=m[1];
     else if((m=line.match(/(?:^|\s)(\d{4})[-.](\d{2})[-.](\d{2})(?:\s|$)/))){const d=m.slice(1).join('-');if(validDate(d))row[/expir/i.test(line)?'expiresOn':'frozenOn']=d;}
-    else if((m=line.match(/^(?:volume\s*[:=]\s*)?(\d+(?:\.\d+)?)\s*(uL|µL|μL|mL|L)(?:\s*(?:each|\/vial|per vial))?$/i))){row.volume=Number(m[1]);row.volumeUnit=/^[uµμ]/i.test(m[2])?'µL':/^m/i.test(m[2])?'mL':'L'}
+    else if((m=line.match(new RegExp('^(?:volume\\s*[:=]\\s*)?('+amount+')\\s*(uL|µL|μL|mL|L)(?:\\s*(?:each|/vial|per vial))?$','i')))){const value=numberValue(m[1]);if(Number.isFinite(value)&&value>=0)row.volume=value;row.volumeUnit=/^[uµμ]/i.test(m[2])?'µL':/^m/i.test(m[2])?'mL':'L'}
     else if((m=line.match(/^(?:cells\s*[:=]\s*)?([\d.]+(?:e[+]?\d+)?)\s*(million|thousand)?\s*cells(?:\s*(?:each|\/vial|per vial))?$/i)))row.cells=String(Number(m[1])*(m[2]?.toLowerCase()==='million'?1e6:m[2]?.toLowerCase()==='thousand'?1e3:1));
     else if((m=line.match(/^(?:passage\s*[:=]?\s*P?|P)(\d+)$/i)))row.passage=Number(m[1]);
     else if((m=line.match(/^lot\s*[:=]\s*(.+)$/i)))row.lot=m[1];
