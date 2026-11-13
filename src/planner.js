@@ -1,4 +1,5 @@
 import {snapshot,planOperation} from './operations.js';
+import {parsePositions} from './positions.js';
 class UserError extends Error {constructor(message,status=400){super(message);this.status=status}}
 function text(v,max=300){return String(v??'').trim().slice(0,max)}
 function date(v,required=false){
@@ -52,7 +53,13 @@ function planAdd(state,payload){
     }
   }
   if(items.length>box.slots.length)throw new UserError(`This box holds ${box.slots.length} vials. Split this batch across boxes.`);
-  let start;
+  let start,slots;
+  if(payload.positions&&String(payload.positions).trim()){
+    const addresses=parsePositions(payload.positions,box);
+    if(addresses.length!==items.length)throw new UserError(`You entered ${items.length} vials but ${addresses.length} positions. Adjust the vial count or position list.`);
+    if(payload.start&&payload.start!=='auto')throw new UserError('Use either an exact position list or a starting position, not both.');
+    slots=addresses.map(p=>box.slots.find(s=>s.position===p));
+  }else{
   if(payload.start&&payload.start!=='auto'){
     start=box.slots.findIndex(s=>s.position===String(payload.start).toUpperCase());
     if(start<0)throw new UserError('Choose a position shown in this box.');
@@ -61,7 +68,9 @@ function planAdd(state,payload){
     if(start<0)throw new UserError(`No run of ${items.length} empty positions is available. Choose fewer vials or a different box.`);
   }
   if(start+items.length>box.slots.length)throw new UserError('This batch would run past the end of the box. Choose an earlier position.');
-  const slots=box.slots.slice(start,start+items.length),taken=slots.find(s=>s.occupied);
-  if(taken)throw new UserError(`${taken.position} already contains a sample or sample details. Choose an empty starting position.`);
+  slots=box.slots.slice(start,start+items.length);
+  }
+  const taken=slots.find(s=>s.occupied);
+  if(taken)throw new UserError(`${taken.position} already contains a sample or sample details. Choose an empty position; nothing was saved.`);
   return {action:'add',sheet:box.sheet,revision:state.revision,positions:slots.map(s=>s.position),slots,items};
 }

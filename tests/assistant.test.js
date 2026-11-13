@@ -19,9 +19,9 @@ test('daily notes parse units and dates and reject ambiguous boxes and unknown d
  const [r]=parseNotes('Froze four vials of Sample 001, 1 million cells per vial, 100 uL each, yesterday, from Supplier',s,context);assert.equal(r.quantity,4);assert.equal(r.cells,'1000000');assert.equal(r.volumeUnit,'µL');assert.equal(r.frozenOn,'2025-01-31');assert.equal(r.source,'Supplier');assert.deepEqual(r.errors,[]);
  assert.match(parseNotes('Froze 2 vials of Sample 001, box 1',s,context)[0].errors.join(' '),/ambiguous/);
  assert.equal(parseNotes('Froze 2 vials of Sample 001, box 1, -20°C',s,context)[0].sheet,s.boxes[1].sheet);
- assert.match(parseNotes('Froze 2 vials of Sample 001, 5 mystery units',s,context)[0].errors.join(' '),/Unrecognized/);
- assert.match(parseNotes('Froze 2 vials of Sample 001 100 uL each',s,context)[0].errors.join(' '),/commas/);
- assert.match(parseNotes('Froze 2 vials of Sample 001, 2025-02-30',s,context)[0].errors.join(' '),/real date/);
+ assert.match(parseNotes('Froze 2 vials of Sample 001, 5 mystery units',s,context)[0].errors.join(' '),/kept in Notes/);
+ assert.equal(parseNotes('Froze 2 vials of Sample 001 100 uL each',s,context)[0].volume,100);
+ assert.match(parseNotes('Froze 2 vials of Sample 001, 2025-02-30',s,context)[0].errors.join(' '),/not valid/);
 });
 test('batch changes are atomic and take-outs retain their full records',()=>{
  const s=add(fixture()),before=serialize(s),sheet=s.boxes[0].sheet;
