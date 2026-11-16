@@ -15,3 +15,5 @@
 .note-unclear{padding:12px;border:1px solid #dfc58f;background:#fffcf5;border-radius:8px;margin-top:12px}.smart-tools .note-unclear .check-label{display:flex}.smart-tools .note-unclear input{width:18px;margin:0}
 
 .note-summary{margin:14px 0;padding:14px 16px;background:#edf5f3;border-left:3px solid #427d78;border-radius:5px}.note-summary>strong{font-size:17px;overflow-wrap:anywhere}.note-summary p{font-size:13px;color:#31565a;overflow-wrap:anywhere}.note-editor{margin-bottom:0}.note-editor>summary{margin:0}.note-editor[open]>summary{margin-bottom:12px}
+
+.smart-tools .note-plan-ready{background:#eaf5f0;border-color:#43816b}.smart-tools .note-plan-ready strong{color:#235e4a}.smart-tools .note-plan-error{background:#fff0ed;border-color:#b94a40}.smart-tools .note-plan-error strong,.smart-tools .note-plan-error p{color:#96382f}#note-save-actions{margin-top:12px}
